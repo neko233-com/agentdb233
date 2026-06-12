@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,14 +28,34 @@ type Chunk struct {
 }
 
 type Index struct {
-	Project string  `json:"project"`
-	Repo    string  `json:"repo"`
-	Chunks  []Chunk `json:"chunks"`
+	Project string      `json:"project"`
+	Repo    string      `json:"repo"`
+	Stats   BuildStats  `json:"stats"`
+	Chunks  []Chunk     `json:"chunks"`
+	Files   []FileEntry `json:"files,omitempty"`
 }
 
 type Result struct {
 	Chunk
 	Score int `json:"score"`
+}
+
+type BuildStats struct {
+	IndexedFiles int `json:"indexed_files"`
+	SkippedFiles int `json:"skipped_files"`
+	Chunks       int `json:"chunks"`
+}
+
+type FileEntry struct {
+	Path     string `json:"path"`
+	Language string `json:"language"`
+	Chunks   int    `json:"chunks"`
+}
+
+type LanguageSpec struct {
+	Language   string   `json:"language"`
+	Extensions []string `json:"extensions"`
+	Files      []string `json:"files,omitempty"`
 }
 
 func Build(project, repo string) (Index, error) {
@@ -53,6 +74,8 @@ func Build(project, repo string) (Index, error) {
 		return Index{}, errors.New("repo must be a directory")
 	}
 	var chunks []Chunk
+	var files []FileEntry
+	stats := BuildStats{}
 	err = filepath.WalkDir(abs, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -64,10 +87,12 @@ func Build(project, repo string) (Index, error) {
 			return nil
 		}
 		if shouldSkipFile(d.Name()) {
+			stats.SkippedFiles++
 			return nil
 		}
 		lang := LanguageForPath(path)
 		if lang == "" {
+			stats.SkippedFiles++
 			return nil
 		}
 		info, err := d.Info()
@@ -75,6 +100,15 @@ func Build(project, repo string) (Index, error) {
 			return err
 		}
 		if info.Size() > MaxFileBytes {
+			stats.SkippedFiles++
+			return nil
+		}
+		binary, err := isBinaryFile(path)
+		if err != nil {
+			return err
+		}
+		if binary {
+			stats.SkippedFiles++
 			return nil
 		}
 		rel, err := filepath.Rel(abs, path)
@@ -85,6 +119,8 @@ func Build(project, repo string) (Index, error) {
 		if err != nil {
 			return err
 		}
+		stats.IndexedFiles++
+		files = append(files, FileEntry{Path: filepath.ToSlash(rel), Language: lang, Chunks: len(fileChunks)})
 		chunks = append(chunks, fileChunks...)
 		return nil
 	})
@@ -100,7 +136,8 @@ func Build(project, repo string) (Index, error) {
 	for i := range chunks {
 		chunks[i].ID = project + ":" + chunks[i].Path + ":" + itoa(chunks[i].StartLine)
 	}
-	return Index{Project: project, Repo: abs, Chunks: chunks}, nil
+	stats.Chunks = len(chunks)
+	return Index{Project: project, Repo: abs, Stats: stats, Chunks: chunks, Files: files}, nil
 }
 
 func Save(path string, idx Index) error {
@@ -237,6 +274,35 @@ func LanguageForPath(path string) string {
 	}
 }
 
+func SupportedLanguages() []LanguageSpec {
+	return []LanguageSpec{
+		{Language: "csharp", Extensions: []string{".cs"}},
+		{Language: "cpp", Extensions: []string{".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"}},
+		{Language: "go", Extensions: []string{".go"}},
+		{Language: "typescript", Extensions: []string{".ts", ".tsx"}},
+		{Language: "javascript", Extensions: []string{".js", ".jsx", ".mjs", ".cjs"}},
+		{Language: "vue", Extensions: []string{".vue"}},
+		{Language: "svelte", Extensions: []string{".svelte"}},
+		{Language: "astro", Extensions: []string{".astro"}},
+		{Language: "java", Extensions: []string{".java"}},
+		{Language: "kotlin", Extensions: []string{".kt", ".kts"}},
+		{Language: "python", Extensions: []string{".py"}},
+		{Language: "rust", Extensions: []string{".rs"}},
+		{Language: "ruby", Extensions: []string{".rb"}},
+		{Language: "php", Extensions: []string{".php"}},
+		{Language: "swift", Extensions: []string{".swift"}},
+		{Language: "lua", Extensions: []string{".lua"}},
+		{Language: "docs", Extensions: []string{".md", ".mdx", ".markdown", ".txt", ".rst", ".adoc"}},
+		{Language: "html", Extensions: []string{".html", ".htm"}},
+		{Language: "style", Extensions: []string{".css", ".scss", ".sass", ".less"}},
+		{Language: "config", Extensions: []string{".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".env", ".properties", ".xml"}},
+		{Language: "manifest", Extensions: nil, Files: []string{"requirements.txt", "pyproject.toml", "package.json", "tsconfig.json", "go.mod", "pom.xml", "build.gradle", "settings.gradle", "gradle.properties"}},
+		{Language: "query", Extensions: []string{".sql", ".graphql", ".gql"}},
+		{Language: "script", Extensions: []string{".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd"}},
+		{Language: "data", Extensions: []string{".csv", ".tsv"}},
+	}
+}
+
 func DetectSymbol(lang, line string) string {
 	s := strings.TrimSpace(line)
 	switch lang {
@@ -359,13 +425,44 @@ func readLines(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
+func isBinaryFile(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, 4096)
+	n, err := f.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, nil
+	}
+	for _, b := range buf[:n] {
+		if b == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func shouldSkipDir(name string) bool {
-	switch strings.ToLower(name) {
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, ".agentdb233-") {
+		return true
+	}
+	switch lower {
 	case ".git", ".hg", ".svn", "node_modules", "vendor", "bin", "obj", "dist", "build", "target", ".next", ".vite", ".turbo", ".cache", "coverage", "__pycache__", ".venv", "venv", ".gradle", ".idea", ".vs":
 		return true
 	default:
 		return false
 	}
+}
+
+func DefaultSkipDirs() []string {
+	return []string{".agentdb233-*", ".git", ".hg", ".svn", "node_modules", "vendor", "bin", "obj", "dist", "build", "target", ".next", ".vite", ".turbo", ".cache", "coverage", "__pycache__", ".venv", "venv", ".gradle", ".idea", ".vs"}
+}
+
+func DefaultSkipFiles() []string {
+	return []string{"*.min.js", "*.min.css", "*.map", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "go.sum", "poetry.lock", "cargo.lock", "gradle.lockfile"}
 }
 
 func shouldSkipFile(name string) bool {

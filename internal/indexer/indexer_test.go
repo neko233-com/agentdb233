@@ -42,7 +42,9 @@ func TestBuildAndSearch(t *testing.T) {
 	write(t, filepath.Join(dir, "Main.kt"), "class Main {\n  fun run() {}\n}\n")
 	write(t, filepath.Join(dir, "brain.py"), "class Memory:\n    def recall(self):\n        return 'python'\n")
 	write(t, filepath.Join(dir, "node_modules", "skip.ts"), "export const noise = true\n")
+	write(t, filepath.Join(dir, ".agentdb233-server-smoke", "run", "server-state.json"), `{"secret":"runtime"}`)
 	write(t, filepath.Join(dir, "bundle.min.js"), "function minifiedNoise(){return true}\n")
+	write(t, filepath.Join(dir, "image.png"), "png\x00binary\n")
 
 	idx, err := Build("demo", dir)
 	if err != nil {
@@ -51,12 +53,24 @@ func TestBuildAndSearch(t *testing.T) {
 	if len(idx.Chunks) < 6 {
 		t.Fatalf("chunks=%d want >= 6", len(idx.Chunks))
 	}
+	if idx.Stats.IndexedFiles < 9 {
+		t.Fatalf("indexed files=%d want >= 9", idx.Stats.IndexedFiles)
+	}
+	if idx.Stats.SkippedFiles < 2 {
+		t.Fatalf("skipped files=%d want >= 2", idx.Stats.SkippedFiles)
+	}
 	for _, ch := range idx.Chunks {
 		if ch.Path == "node_modules/skip.ts" {
 			t.Fatal("node_modules was indexed")
 		}
 		if ch.Path == "bundle.min.js" {
 			t.Fatal("minified file was indexed")
+		}
+		if ch.Path == "image.png" {
+			t.Fatal("binary file was indexed")
+		}
+		if ch.Path == ".agentdb233-server-smoke/run/server-state.json" {
+			t.Fatal("agentdb233 data dir was indexed")
 		}
 	}
 	results := Search(idx, "SearchBrain context", 5)
@@ -69,6 +83,16 @@ func TestBuildAndSearch(t *testing.T) {
 	htmlResults := Search(idx, "html agent output", 5)
 	if len(htmlResults) == 0 || htmlResults[0].Language != "html" {
 		t.Fatalf("html search top=%v", htmlResults)
+	}
+}
+
+func TestSupportedLanguagesMetadata(t *testing.T) {
+	specs := SupportedLanguages()
+	if len(specs) < 20 {
+		t.Fatalf("languages=%d want >= 20", len(specs))
+	}
+	if len(DefaultSkipDirs()) == 0 || len(DefaultSkipFiles()) == 0 {
+		t.Fatal("skip metadata empty")
 	}
 }
 

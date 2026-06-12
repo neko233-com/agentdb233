@@ -82,6 +82,14 @@ curl 'http://127.0.0.1:23390/api/index/search?project=demo&q=auth%20middleware&l
 
 Result includes `path`, `language`, `symbol`, `start_line`, `end_line`, `text`, `score`.
 
+Inspect supported languages and default ignore rules:
+
+```bash
+curl http://127.0.0.1:23390/api/index/languages
+```
+
+Build result includes `stats` (`indexed_files`, `skipped_files`, `chunks`) and indexed file metadata. Generated/minified/lock/binary files and common cache/build folders are skipped by default.
+
 ## Knowledge
 
 Add entry:

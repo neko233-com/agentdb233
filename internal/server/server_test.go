@@ -26,7 +26,14 @@ func TestIndexBuildSearchAPI(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("build status=%d", resp.StatusCode)
 	}
+	var build map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&build); err != nil {
+		t.Fatal(err)
+	}
 	_ = resp.Body.Close()
+	if build["stats"] == nil || build["files"] == nil {
+		t.Fatalf("build response missing stats/files: %+v", build)
+	}
 
 	resp, err = http.Get(srv.URL + "/api/index/search?project=demo&q=fast%20retrieval")
 	if err != nil {
@@ -45,6 +52,22 @@ func TestIndexBuildSearchAPI(t *testing.T) {
 	}
 	if results[0]["language"] != "python" {
 		t.Fatalf("language=%v want python", results[0]["language"])
+	}
+
+	resp, err = http.Get(srv.URL + "/api/index/languages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("languages status=%d", resp.StatusCode)
+	}
+	var meta map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["languages"] == nil || meta["skip_dirs"] == nil || meta["max_bytes"] == nil {
+		t.Fatalf("languages meta=%+v", meta)
 	}
 }
 

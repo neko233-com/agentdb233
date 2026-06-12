@@ -37,6 +37,7 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/git/refs", s.gitRefs)
 	mux.HandleFunc("GET /api/git/commits", s.gitCommits)
 	mux.HandleFunc("GET /api/git/status", s.gitStatus)
+	mux.HandleFunc("GET /api/index/languages", s.indexLanguages)
 	mux.HandleFunc("POST /api/index/build", s.buildIndex)
 	mux.HandleFunc("GET /api/index/search", s.searchIndex)
 	mux.HandleFunc("/", s.index)
@@ -59,6 +60,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 			"skill-registry",
 			"mcp-registry",
 			"code-index-search",
+			"code-index-stats",
 			"asset-industry-metadata",
 		},
 	})
@@ -161,6 +163,15 @@ func (s *Server) gitStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+func (s *Server) indexLanguages(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"languages":  indexer.SupportedLanguages(),
+		"skip_dirs":  indexer.DefaultSkipDirs(),
+		"skip_files": indexer.DefaultSkipFiles(),
+		"max_bytes":  indexer.MaxFileBytes,
+	})
+}
+
 func (s *Server) buildIndex(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Project string `json:"project"`
@@ -182,7 +193,8 @@ func (s *Server) buildIndex(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"project": idx.Project,
 		"repo":    idx.Repo,
-		"chunks":  len(idx.Chunks),
+		"stats":   idx.Stats,
+		"files":   idx.Files,
 	})
 }
 
