@@ -63,6 +63,9 @@ func Build(project, repo string) (Index, error) {
 			}
 			return nil
 		}
+		if shouldSkipFile(d.Name()) {
+			return nil
+		}
 		lang := LanguageForPath(path)
 		if lang == "" {
 			return nil
@@ -175,23 +178,60 @@ func ChunkFile(project, repo, rel, lang, path string) ([]Chunk, error) {
 }
 
 func LanguageForPath(path string) string {
+	base := strings.ToLower(filepath.Base(path))
+	switch base {
+	case "dockerfile", "makefile", "justfile", "gemfile", "rakefile":
+		return strings.TrimSuffix(base, "file")
+	case "requirements.txt", "pyproject.toml", "package.json", "tsconfig.json", "go.mod", "go.sum", "pom.xml", "build.gradle", "settings.gradle", "gradle.properties":
+		return "manifest"
+	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".cs":
 		return "csharp"
+	case ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx":
+		return "cpp"
 	case ".go":
 		return "go"
 	case ".ts", ".tsx":
 		return "typescript"
 	case ".js", ".jsx", ".mjs", ".cjs":
 		return "javascript"
+	case ".vue":
+		return "vue"
+	case ".svelte":
+		return "svelte"
+	case ".astro":
+		return "astro"
 	case ".java":
 		return "java"
 	case ".kt", ".kts":
 		return "kotlin"
 	case ".py":
 		return "python"
-	case ".md", ".mdx", ".txt":
+	case ".rs":
+		return "rust"
+	case ".rb":
+		return "ruby"
+	case ".php":
+		return "php"
+	case ".swift":
+		return "swift"
+	case ".lua":
+		return "lua"
+	case ".md", ".mdx", ".markdown", ".txt", ".rst", ".adoc":
 		return "docs"
+	case ".html", ".htm":
+		return "html"
+	case ".css", ".scss", ".sass", ".less":
+		return "style"
+	case ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".env", ".properties", ".xml":
+		return "config"
+	case ".sql", ".graphql", ".gql":
+		return "query"
+	case ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd":
+		return "script"
+	case ".csv", ".tsv":
+		return "data"
 	default:
 		return ""
 	}
@@ -208,16 +248,49 @@ func DetectSymbol(lang, line string) string {
 		if strings.HasPrefix(s, "def ") || strings.HasPrefix(s, "class ") {
 			return compactSymbol(s)
 		}
-	case "typescript", "javascript":
+	case "typescript", "javascript", "vue", "svelte", "astro":
 		if strings.HasPrefix(s, "export ") || strings.HasPrefix(s, "function ") || strings.Contains(s, "=>") || strings.Contains(s, " class ") {
 			return compactSymbol(s)
 		}
-	case "java", "kotlin", "csharp":
+	case "java", "kotlin", "csharp", "cpp", "rust", "swift", "php":
 		if strings.Contains(s, " class ") || strings.HasPrefix(s, "class ") || strings.Contains(s, " interface ") || strings.Contains(s, " fun ") || strings.HasPrefix(s, "fun ") || strings.Contains(s, " void ") {
+			return compactSymbol(s)
+		}
+		if strings.HasPrefix(s, "func ") || strings.HasPrefix(s, "fn ") || strings.HasPrefix(s, "struct ") || strings.HasPrefix(s, "enum ") {
+			return compactSymbol(s)
+		}
+	case "ruby":
+		if strings.HasPrefix(s, "def ") || strings.HasPrefix(s, "class ") || strings.HasPrefix(s, "module ") {
+			return compactSymbol(s)
+		}
+	case "lua":
+		if strings.HasPrefix(s, "function ") || strings.Contains(s, "= function") {
 			return compactSymbol(s)
 		}
 	case "docs":
 		if strings.HasPrefix(s, "#") {
+			return compactSymbol(s)
+		}
+	case "html":
+		lower := strings.ToLower(s)
+		if strings.HasPrefix(lower, "<title") || strings.HasPrefix(lower, "<h1") || strings.HasPrefix(lower, "<h2") || strings.HasPrefix(lower, "<h3") || strings.HasPrefix(lower, "<section") || strings.HasPrefix(lower, "<article") {
+			return compactSymbol(stripHTML(compactSymbol(s)))
+		}
+	case "style":
+		if strings.HasSuffix(s, "{") {
+			return compactSymbol(s)
+		}
+	case "config", "manifest":
+		if strings.Contains(s, ":") || strings.Contains(s, "=") || strings.HasPrefix(s, "[") {
+			return compactSymbol(s)
+		}
+	case "script":
+		if strings.HasPrefix(s, "function ") || strings.HasPrefix(s, "param(") || strings.HasPrefix(s, "Param(") {
+			return compactSymbol(s)
+		}
+	case "query":
+		lower := strings.ToLower(s)
+		if strings.HasPrefix(lower, "select ") || strings.HasPrefix(lower, "create ") || strings.HasPrefix(lower, "mutation ") || strings.HasPrefix(lower, "query ") {
 			return compactSymbol(s)
 		}
 	}
@@ -288,7 +361,20 @@ func readLines(path string) ([]string, error) {
 
 func shouldSkipDir(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", "node_modules", "vendor", "bin", "obj", "dist", "build", "target", ".next", ".vite", "__pycache__", ".venv", "venv":
+	case ".git", ".hg", ".svn", "node_modules", "vendor", "bin", "obj", "dist", "build", "target", ".next", ".vite", ".turbo", ".cache", "coverage", "__pycache__", ".venv", "venv", ".gradle", ".idea", ".vs":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldSkipFile(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".min.js") || strings.HasSuffix(lower, ".min.css") || strings.HasSuffix(lower, ".map") {
+		return true
+	}
+	switch lower {
+	case "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "go.sum", "poetry.lock", "cargo.lock", "gradle.lockfile":
 		return true
 	default:
 		return false
@@ -300,6 +386,28 @@ func compactSymbol(s string) string {
 		return s[:160]
 	}
 	return s
+}
+
+func stripHTML(s string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				b.WriteRune(r)
+			}
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return s
+	}
+	return out
 }
 
 func itoa(v int) string {

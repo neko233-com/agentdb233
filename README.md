@@ -15,12 +15,17 @@ Native platform target:
 Native language index:
 
 - C# (`.cs`)
+- C/C++ (`.c`, `.h`, `.cc`, `.cpp`, `.hpp`)
 - Go (`.go`)
 - TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`)
 - Java (`.java`)
 - Kotlin (`.kt`, `.kts`)
 - Python (`.py`)
-- Docs (`.md`, `.mdx`, `.txt`)
+- Rust / Ruby / PHP / Swift / Lua
+- HTML / CSS / Vue / Svelte / Astro
+- Docs (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`, `.txt`)
+- Config and manifests (`.json`, `.yaml`, `.toml`, `.xml`, `.properties`, `package.json`, `go.mod`, `Dockerfile`)
+- Scripts (`.sh`, `.ps1`, `.bat`, `.cmd`)
 
 ## Install
 
