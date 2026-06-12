@@ -173,6 +173,8 @@ agentdb233-server version
 
 Do not maintain separate docs for each agent/CLI. Put project facts and norms into `agentdb233` once, then connect every AI to the same HTTP API or MCP server.
 
+Codex skill is included at `skills/agentdb233` and installed from release assets as `agentdb233.skill.json` / `.gz`.
+
 MCP stdio:
 
 ```bash

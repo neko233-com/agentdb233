@@ -1,0 +1,13 @@
+{
+  "name": "agentdb233",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:skill": "node scripts/validate-skill.mjs skills/agentdb233",
+    "pack:skill": "node scripts/pack-skill.mjs skills/agentdb233 dist"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
