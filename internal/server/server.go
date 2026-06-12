@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
+	"github.com/neko233-com/agentdb233/internal/contextpack"
 	"github.com/neko233-com/agentdb233/internal/gitx"
 	"github.com/neko233-com/agentdb233/internal/indexer"
 	"github.com/neko233-com/agentdb233/internal/model"
@@ -40,6 +44,8 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/index/languages", s.indexLanguages)
 	mux.HandleFunc("POST /api/index/build", s.buildIndex)
 	mux.HandleFunc("GET /api/index/search", s.searchIndex)
+	mux.HandleFunc("GET /api/context/pack", s.contextPack)
+	mux.HandleFunc("POST /api/norms/import", s.importNorms)
 	mux.HandleFunc("/", s.index)
 	return withCORS(mux)
 }
@@ -61,6 +67,8 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 			"mcp-registry",
 			"code-index-search",
 			"code-index-stats",
+			"context-pack",
+			"norms-import",
 			"asset-industry-metadata",
 		},
 	})
@@ -174,14 +182,23 @@ func (s *Server) indexLanguages(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) buildIndex(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Project string `json:"project"`
-		Repo    string `json:"repo"`
+		Project     string `json:"project"`
+		Repo        string `json:"repo"`
+		Ref         string `json:"ref"`
+		TrackedOnly bool   `json:"tracked_only"`
+		Incremental bool   `json:"incremental"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		errJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	idx, err := indexer.Build(req.Project, req.Repo)
+	var previous *indexer.Index
+	if req.Incremental {
+		if old, err := indexer.Load(s.indexPath(req.Project)); err == nil {
+			previous = &old
+		}
+	}
+	idx, err := indexer.BuildWithOptions(indexer.BuildOptions{Project: req.Project, Repo: req.Repo, Ref: req.Ref, TrackedOnly: req.TrackedOnly, Previous: previous})
 	if err != nil {
 		errJSON(w, http.StatusBadRequest, err.Error())
 		return
@@ -212,13 +229,81 @@ func (s *Server) searchIndex(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, indexer.Search(idx, r.URL.Query().Get("q"), limit))
 }
 
+func (s *Server) contextPack(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	if project == "" {
+		project = "default"
+	}
+	query := r.URL.Query().Get("q")
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	budget, _ := strconv.Atoi(r.URL.Query().Get("budget"))
+	idx, err := indexer.Load(s.indexPath(project))
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	results := indexer.Search(idx, query, limit)
+	knowledge, err := s.store.ListKnowledge(project, query)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(knowledge) > 10 {
+		knowledge = knowledge[:10]
+	}
+	writeJSON(w, http.StatusOK, contextpack.Build(project, query, budget, results, knowledge))
+}
+
+func (s *Server) importNorms(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Project string `json:"project"`
+		Repo    string `json:"repo"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	project := req.Project
+	if project == "" {
+		project = "default"
+	}
+	repo, err := filepath.Abs(req.Repo)
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	names := []string{"AGENTS.md", "CLAUDE.md", ".clinerules", ".cursorrules", "README.md", "CONTRIBUTING.md"}
+	var imported []model.KnowledgeEntry
+	for _, name := range names {
+		path := filepath.Join(repo, name)
+		b, err := os.ReadFile(path)
+		if err != nil || len(strings.TrimSpace(string(b))) == 0 {
+			continue
+		}
+		entry, err := s.store.AddKnowledge(model.KnowledgeEntry{
+			Project: project,
+			Kind:    "norm",
+			Title:   name,
+			Body:    string(b),
+			Tags:    []string{"norms", "shared-ai-context"},
+			Git:     model.GitRef{Repo: repo},
+		})
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		imported = append(imported, entry)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"project": project, "imported": imported})
+}
+
 func (s *Server) indexPath(project string) string {
 	return s.store.IndexPath(project)
 }
 
 func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("content-type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><title>agentdb233</title><style>body{font-family:system-ui;margin:40px;max-width:900px}code{background:#eee;padding:2px 5px;border-radius:4px}</style><h1>agentdb233</h1><p>Agent external brain volume running.</p><p>API: <code>/api/status</code>, <code>/api/knowledge</code>, <code>/api/index/build</code>, <code>/api/index/search</code>, <code>/api/git/refs</code>, <code>/api/skills</code>, <code>/api/mcp</code></p>`))
+	_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><title>agentdb233</title><style>body{font-family:system-ui;margin:40px;max-width:900px}code{background:#eee;padding:2px 5px;border-radius:4px}</style><h1>agentdb233</h1><p>Agent external brain volume running.</p><p>API: <code>/api/status</code>, <code>/api/knowledge</code>, <code>/api/index/build</code>, <code>/api/index/search</code>, <code>/api/context/pack</code>, <code>/api/git/refs</code>, <code>/api/skills</code>, <code>/api/mcp</code></p>`))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

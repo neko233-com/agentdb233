@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -93,6 +94,57 @@ func TestSupportedLanguagesMetadata(t *testing.T) {
 	}
 	if len(DefaultSkipDirs()) == 0 || len(DefaultSkipFiles()) == 0 {
 		t.Fatal("skip metadata empty")
+	}
+}
+
+func TestIncrementalBuildReusesUnchangedFiles(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "a.go"), "package demo\nfunc Alpha() {}\n")
+	write(t, filepath.Join(dir, "b.py"), "def beta():\n    return 1\n")
+	first, err := Build("demo", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "b.py"), "def beta():\n    return 2\n")
+	second, err := BuildWithOptions(BuildOptions{Project: "demo", Repo: dir, Previous: &first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Stats.ReusedFiles == 0 {
+		t.Fatalf("reused=%d want > 0", second.Stats.ReusedFiles)
+	}
+	if second.Stats.IndexedFiles == 0 {
+		t.Fatalf("indexed=%d want > 0", second.Stats.IndexedFiles)
+	}
+}
+
+func TestBuildGitRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	git(t, dir, "init")
+	git(t, dir, "config", "user.email", "agentdb233@example.test")
+	git(t, dir, "config", "user.name", "agentdb233")
+	write(t, filepath.Join(dir, "ref.go"), "package demo\nfunc RefOnly() {}\n")
+	git(t, dir, "add", "ref.go")
+	git(t, dir, "commit", "-m", "ref")
+	idx, err := BuildWithOptions(BuildOptions{Project: "demo", Repo: dir, Ref: "HEAD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx.Ref != "HEAD" || len(idx.Chunks) == 0 {
+		t.Fatalf("idx=%+v", idx)
+	}
+}
+
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, string(out))
 	}
 }
 

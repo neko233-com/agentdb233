@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/neko233-com/agentdb233/internal/mcp"
 	"github.com/neko233-com/agentdb233/internal/version"
 )
 
@@ -34,6 +35,14 @@ func run(args []string) error {
 			return err
 		}
 		return runStart(args[1:])
+	case "enable-autostart":
+		return runEnableAutostart(args[1:])
+	case "disable-autostart":
+		return runDisableAutostart(args[1:])
+	case "autostart-status":
+		return runAutostartStatus(args[1:])
+	case "mcp":
+		return runMCP(args[1:])
 	case "status":
 		return runStatus(args[1:])
 	case "port":
@@ -49,6 +58,17 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runMCP(args []string) error {
+	fs := flag.NewFlagSet("agentdb233-server mcp", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	data := &stringFlag{}
+	fs.Var(data, "data", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return mcp.RunStdio(resolveDataDir(data.Value(), data.IsSet()))
 }
 
 func runServe(args []string) error {
@@ -216,6 +236,10 @@ func printUsage() {
   start                background server
   stop                 stop running server
   restart              restart background server
+  enable-autostart     install native boot autostart
+  disable-autostart    remove native boot autostart
+  autostart-status     show native boot autostart status
+  mcp                  run MCP stdio server
   status               show pid/addr/data dir
   port                 show configured/default port
   set-port <port>      update configured port/address

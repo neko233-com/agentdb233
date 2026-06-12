@@ -71,7 +71,15 @@ Build index:
 ```bash
 curl -X POST http://127.0.0.1:23390/api/index/build \
   -H 'content-type: application/json' \
-  -d '{"project":"demo","repo":"/path/to/repo"}'
+  -d '{"project":"demo","repo":"/path/to/repo","tracked_only":true,"incremental":true}'
+```
+
+Index a Git ref without switching worktree:
+
+```bash
+curl -X POST http://127.0.0.1:23390/api/index/build \
+  -H 'content-type: application/json' \
+  -d '{"project":"demo-main","repo":"/path/to/repo","ref":"main"}'
 ```
 
 Search compact context:
@@ -89,6 +97,20 @@ curl http://127.0.0.1:23390/api/index/languages
 ```
 
 Build result includes `stats` (`indexed_files`, `skipped_files`, `chunks`) and indexed file metadata. Generated/minified/lock/binary files and common cache/build folders are skipped by default.
+
+Get one shared compact context pack for any AI:
+
+```bash
+curl 'http://127.0.0.1:23390/api/context/pack?project=demo&q=auth%20middleware&budget=8000'
+```
+
+Import shared norms once from project docs (`AGENTS.md`, `CLAUDE.md`, `.clinerules`, `.cursorrules`, `README.md`, `CONTRIBUTING.md`):
+
+```bash
+curl -X POST http://127.0.0.1:23390/api/norms/import \
+  -H 'content-type: application/json' \
+  -d '{"project":"demo","repo":"/path/to/repo"}'
+```
 
 ## Knowledge
 
@@ -142,5 +164,23 @@ agentdb233-server start
 agentdb233-server status
 agentdb233-server stop
 agentdb233-server set-port 32390
+agentdb233-server enable-autostart
+agentdb233-server mcp
 agentdb233-server version
 ```
+
+## One Brain For All AI
+
+Do not maintain separate docs for each agent/CLI. Put project facts and norms into `agentdb233` once, then connect every AI to the same HTTP API or MCP server.
+
+MCP stdio:
+
+```bash
+agentdb233-server mcp
+```
+
+Tools:
+
+- `build_index`
+- `search_context`
+- `git_refs`

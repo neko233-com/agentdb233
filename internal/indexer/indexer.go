@@ -2,10 +2,15 @@ package indexer
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -30,6 +35,7 @@ type Chunk struct {
 type Index struct {
 	Project string      `json:"project"`
 	Repo    string      `json:"repo"`
+	Ref     string      `json:"ref,omitempty"`
 	Stats   BuildStats  `json:"stats"`
 	Chunks  []Chunk     `json:"chunks"`
 	Files   []FileEntry `json:"files,omitempty"`
@@ -42,6 +48,7 @@ type Result struct {
 
 type BuildStats struct {
 	IndexedFiles int `json:"indexed_files"`
+	ReusedFiles  int `json:"reused_files"`
 	SkippedFiles int `json:"skipped_files"`
 	Chunks       int `json:"chunks"`
 }
@@ -50,6 +57,9 @@ type FileEntry struct {
 	Path     string `json:"path"`
 	Language string `json:"language"`
 	Chunks   int    `json:"chunks"`
+	Hash     string `json:"hash,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	ModTime  string `json:"mod_time,omitempty"`
 }
 
 type LanguageSpec struct {
@@ -58,11 +68,24 @@ type LanguageSpec struct {
 	Files      []string `json:"files,omitempty"`
 }
 
+type BuildOptions struct {
+	Project     string
+	Repo        string
+	Ref         string
+	TrackedOnly bool
+	Previous    *Index
+}
+
 func Build(project, repo string) (Index, error) {
+	return BuildWithOptions(BuildOptions{Project: project, Repo: repo})
+}
+
+func BuildWithOptions(opts BuildOptions) (Index, error) {
+	project := opts.Project
 	if strings.TrimSpace(project) == "" {
 		project = "default"
 	}
-	abs, err := filepath.Abs(repo)
+	abs, err := filepath.Abs(opts.Repo)
 	if err != nil {
 		return Index{}, err
 	}
@@ -73,59 +96,59 @@ func Build(project, repo string) (Index, error) {
 	if !info.IsDir() {
 		return Index{}, errors.New("repo must be a directory")
 	}
+	if strings.TrimSpace(opts.Ref) != "" {
+		return buildGitRef(project, abs, opts.Ref)
+	}
+	candidates, skipped, err := candidateFiles(abs, opts.TrackedOnly)
+	if err != nil {
+		return Index{}, err
+	}
 	var chunks []Chunk
 	var files []FileEntry
-	stats := BuildStats{}
-	err = filepath.WalkDir(abs, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			if shouldSkipDir(d.Name()) && path != abs {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if shouldSkipFile(d.Name()) {
-			stats.SkippedFiles++
-			return nil
-		}
+	stats := BuildStats{SkippedFiles: skipped}
+	prev := previousByPath(opts.Previous)
+	for _, rel := range candidates {
+		path := filepath.Join(abs, filepath.FromSlash(rel))
 		lang := LanguageForPath(path)
-		if lang == "" {
+		if lang == "" || shouldSkipFile(filepath.Base(path)) {
 			stats.SkippedFiles++
-			return nil
+			continue
 		}
-		info, err := d.Info()
-		if err != nil {
-			return err
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			stats.SkippedFiles++
+			continue
 		}
 		if info.Size() > MaxFileBytes {
 			stats.SkippedFiles++
-			return nil
+			continue
 		}
 		binary, err := isBinaryFile(path)
 		if err != nil {
-			return err
+			return Index{}, err
 		}
 		if binary {
 			stats.SkippedFiles++
-			return nil
+			continue
 		}
-		rel, err := filepath.Rel(abs, path)
+		hash, err := fileSHA256(path)
 		if err != nil {
-			return err
+			return Index{}, err
 		}
-		fileChunks, err := ChunkFile(project, abs, filepath.ToSlash(rel), lang, path)
+		if old, ok := prev[rel]; ok && old.Hash == hash {
+			reused := chunksForFile(opts.Previous, rel)
+			chunks = append(chunks, reused...)
+			files = append(files, old)
+			stats.ReusedFiles++
+			continue
+		}
+		fileChunks, err := ChunkFile(project, abs, rel, lang, path)
 		if err != nil {
-			return err
+			return Index{}, err
 		}
 		stats.IndexedFiles++
-		files = append(files, FileEntry{Path: filepath.ToSlash(rel), Language: lang, Chunks: len(fileChunks)})
+		files = append(files, FileEntry{Path: rel, Language: lang, Chunks: len(fileChunks), Hash: hash, Size: info.Size(), ModTime: info.ModTime().UTC().Format("2006-01-02T15:04:05Z")})
 		chunks = append(chunks, fileChunks...)
-		return nil
-	})
-	if err != nil {
-		return Index{}, err
 	}
 	sort.Slice(chunks, func(i, j int) bool {
 		if chunks[i].Path == chunks[j].Path {
@@ -138,6 +161,51 @@ func Build(project, repo string) (Index, error) {
 	}
 	stats.Chunks = len(chunks)
 	return Index{Project: project, Repo: abs, Stats: stats, Chunks: chunks, Files: files}, nil
+}
+
+func buildGitRef(project, repo, ref string) (Index, error) {
+	files, err := gitLines(repo, "ls-tree", "-r", "--name-only", ref)
+	if err != nil {
+		return Index{}, err
+	}
+	idx := Index{Project: project, Repo: repo, Ref: ref}
+	for _, rel := range files {
+		rel = filepath.ToSlash(rel)
+		if shouldSkipFile(filepath.Base(rel)) {
+			idx.Stats.SkippedFiles++
+			continue
+		}
+		lang := LanguageForPath(rel)
+		if lang == "" {
+			idx.Stats.SkippedFiles++
+			continue
+		}
+		content, err := gitBytes(repo, "show", ref+":"+rel)
+		if err != nil {
+			idx.Stats.SkippedFiles++
+			continue
+		}
+		if int64(len(content)) > MaxFileBytes || bytes.IndexByte(content, 0) >= 0 {
+			idx.Stats.SkippedFiles++
+			continue
+		}
+		sum := sha256.Sum256(content)
+		chunks := ChunkText(project, repo, rel, lang, string(content))
+		idx.Files = append(idx.Files, FileEntry{Path: rel, Language: lang, Chunks: len(chunks), Hash: hex.EncodeToString(sum[:]), Size: int64(len(content))})
+		idx.Chunks = append(idx.Chunks, chunks...)
+		idx.Stats.IndexedFiles++
+	}
+	sort.Slice(idx.Chunks, func(i, j int) bool {
+		if idx.Chunks[i].Path == idx.Chunks[j].Path {
+			return idx.Chunks[i].StartLine < idx.Chunks[j].StartLine
+		}
+		return idx.Chunks[i].Path < idx.Chunks[j].Path
+	})
+	for i := range idx.Chunks {
+		idx.Chunks[i].ID = project + ":" + idx.Chunks[i].Path + ":" + itoa(idx.Chunks[i].StartLine)
+	}
+	idx.Stats.Chunks = len(idx.Chunks)
+	return idx, nil
 }
 
 func Save(path string, idx Index) error {
@@ -192,6 +260,14 @@ func ChunkFile(project, repo, rel, lang, path string) ([]Chunk, error) {
 	if err != nil {
 		return nil, err
 	}
+	return chunkLines(project, repo, rel, lang, lines), nil
+}
+
+func ChunkText(project, repo, rel, lang, text string) []Chunk {
+	return chunkLines(project, repo, rel, lang, strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n"))
+}
+
+func chunkLines(project, repo, rel, lang string, lines []string) []Chunk {
 	var chunks []Chunk
 	start := 1
 	symbol := ""
@@ -211,7 +287,7 @@ func ChunkFile(project, repo, rel, lang, path string) ([]Chunk, error) {
 	if start <= len(lines) {
 		chunks = append(chunks, makeChunk(project, repo, rel, lang, symbol, start, len(lines), lines[start-1:]))
 	}
-	return chunks, nil
+	return chunks
 }
 
 func LanguageForPath(path string) string {
@@ -423,6 +499,115 @@ func readLines(path string) ([]string, error) {
 		lines = append(lines, scanner.Text())
 	}
 	return lines, scanner.Err()
+}
+
+func candidateFiles(root string, trackedOnly bool) ([]string, int, error) {
+	if trackedOnly {
+		lines, err := gitLines(root, "ls-files")
+		if err == nil {
+			return normalizeCandidates(lines), 0, nil
+		}
+	}
+	var files []string
+	skipped := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if shouldSkipDir(d.Name()) && path != root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(filepath.ToSlash(rel), ".git/") {
+			skipped++
+			return nil
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	return normalizeCandidates(files), skipped, err
+}
+
+func normalizeCandidates(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(filepath.ToSlash(line))
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func previousByPath(idx *Index) map[string]FileEntry {
+	out := map[string]FileEntry{}
+	if idx == nil {
+		return out
+	}
+	for _, f := range idx.Files {
+		out[f.Path] = f
+	}
+	return out
+}
+
+func chunksForFile(idx *Index, path string) []Chunk {
+	if idx == nil {
+		return nil
+	}
+	var out []Chunk
+	for _, ch := range idx.Chunks {
+		if ch.Path == path {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+func fileSHA256(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func gitLines(repo string, args ...string) ([]string, error) {
+	out, err := gitBytes(repo, args...)
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
+}
+
+func gitBytes(repo string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
+	}
+	return out, nil
 }
 
 func isBinaryFile(path string) (bool, error) {

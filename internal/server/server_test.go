@@ -69,6 +69,53 @@ func TestIndexBuildSearchAPI(t *testing.T) {
 	if meta["languages"] == nil || meta["skip_dirs"] == nil || meta["max_bytes"] == nil {
 		t.Fatalf("languages meta=%+v", meta)
 	}
+
+	resp, err = http.Get(srv.URL + "/api/context/pack?project=demo&q=fast%20retrieval&budget=2000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("context pack status=%d", resp.StatusCode)
+	}
+	var pack map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&pack); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := pack["text"].(string)
+	if !bytes.Contains([]byte(text), []byte("fast retrieval")) {
+		t.Fatalf("pack text=%q", text)
+	}
+}
+
+func TestImportNormsAPI(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("Use shared agentdb233 norms.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(New(t.TempDir()).Router())
+	defer srv.Close()
+	body := []byte(`{"project":"demo","repo":` + quote(repo) + `}`)
+	resp, err := http.Post(srv.URL+"/api/norms/import", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import status=%d", resp.StatusCode)
+	}
+	resp, err = http.Get(srv.URL + "/api/knowledge?project=demo&q=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var entries []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected imported norm")
+	}
 }
 
 func quote(v string) string {

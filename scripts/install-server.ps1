@@ -38,6 +38,8 @@ function Install-AgentDB233Server {
     Write-Host "Run: `$env:AGENTDB233_DATA=`"$env:USERPROFILE\\.agentdb233-server`"; agentdb233-server start"
     Write-Host "Status: agentdb233-server status"
     Write-Host "Change port: agentdb233-server set-port 32390"
+    Write-Host "Enable boot autostart: agentdb233-server enable-autostart"
+    Write-Host "Run MCP stdio: agentdb233-server mcp"
 }
 
 if ($Version -eq "latest") {

@@ -28,6 +28,10 @@ func (s *Store) IndexPath(project string) string {
 	return filepath.Join(s.dataDir, "index", sanitizeName(project)+".json")
 }
 
+func SanitizeName(v string) string {
+	return sanitizeName(v)
+}
+
 func (s *Store) Init() error {
 	for _, dir := range []string{
 		s.dataDir,
